@@ -130,7 +130,6 @@ GSIArray.h \
 GSIMap.h \
 GSFunctions.h \
 GSLocale.h \
-GSLock.h \
 GSMime.h \
 GSTLS.h \
 GSXML.h \
@@ -142,7 +141,6 @@ NSData+GNUstepBase.h \
 NSDebug+GNUstepBase.h \
 NSFileHandle+GNUstepBase.h \
 NSHashTable+GNUstepBase.h \
-NSLock+GNUstepBase.h \
 NSMutableString+GNUstepBase.h \
 NSNetServices+GNUstepBase.h \
 NSNumber+GNUstepBase.h \
@@ -270,6 +268,7 @@ NSMeasurement.m \
 NSMetadata.m \
 NSMetadataAttributes.m \
 NSMethodSignature.m \
+NSNetServices.m \
 NSNotification.m \
 NSNotificationCenter.m \
 NSNotificationQueue.m \
@@ -391,8 +390,7 @@ endif
 
 ifeq ($(GNUSTEP_BASE_HAVE_MDNS), 1)
   BASE_MFILES += \
-	GSMDNSNetServices.m \
-	NSNetServices.m
+	GSMDNSNetServices.m
 endif
 
 ifeq ($(GNUSTEP_BASE_HAVE_AVAHI), 1)
@@ -400,8 +398,7 @@ ifeq ($(GNUSTEP_BASE_HAVE_AVAHI), 1)
 	GSAvahiNetService.m \
 	GSAvahiNetServiceBrowser.m \
 	GSAvahiClient.m \
-	GSAvahiRunLoopIntegration.m \
-	NSNetServices.m
+	GSAvahiRunLoopIntegration.m
 endif
 
 ifeq ($(WITH_FFI),libffi)
@@ -639,6 +636,7 @@ libbase-resources_RESOURCE_FILES = Info-gnustep.plist
 
 libgnustep-base_NEEDS_GUI = NO
 libgnustep-baseadd_NEEDS_GUI = NO
+libgnustep-base_PKGCONFIG_FILES = "gnustep-base.pc"
 
 # Build the Additions subproject first.  It can then be used in by
 # both gnustep-base and gnustep-baseadd (otherwise, if we ever build

@@ -28,7 +28,6 @@
    Boston, MA 02110 USA.
 
    <title>NSString class reference</title>
-   $Date$ $Revision$
 */
 
 /* Caveats:
@@ -67,11 +66,13 @@
 #import "Foundation/NSLocale.h"
 #import "Foundation/NSLock.h"
 #import "Foundation/NSNotification.h"
+#import "Foundation/NSObjCRuntime.h"
 #import "Foundation/NSScanner.h"
 #import "Foundation/NSUserDefaults.h"
 #import "Foundation/FoundationErrors.h"
 // For private method _decodePropertyListForKey:
 #import "Foundation/NSKeyedArchiver.h"
+#import "GNUstepBase/GSBlocks.h"
 #import "GNUstepBase/GSMime.h"
 #import "GNUstepBase/NSString+GNUstepBase.h"
 #import "GNUstepBase/NSMutableString+GNUstepBase.h"
@@ -103,13 +104,19 @@
 #if	defined(HAVE_UNICODE_UNORM2_H)
 # include <unicode/unorm2.h>
 #endif
-#if     defined(HAVE_UNICODE_USTRING_H)
+#if	defined(HAVE_UNICODE_USTRING_H)
 # include <unicode/ustring.h>
 #endif
-#if     defined(HAVE_UNICODE_USEARCH_H)
+#if	defined(HAVE_UNICODE_USEARCH_H)
 # include <unicode/usearch.h>
 #endif
-#if     defined(HAVE_ICU_H)
+#if	defined(HAVE_UNICODE_UBRK_H)
+# include <unicode/ubrk.h>
+#endif
+#if	defined(HAVE_UNICODE_UTYPES_H)
+# include <unicode/utypes.h>
+#endif
+#if	defined(HAVE_ICU_H)
 # include <icu.h>
 #endif
 
@@ -1543,8 +1550,10 @@ GSICUCollatorOpen(NSStringCompareOptions mask, NSLocale *locale)
   if (len == 0)
     {
       RELEASE(d);
-      DESTROY(self);
-      return @"";
+      return [self initWithBytesNoCopy: (char *)""
+				length: 0
+			      encoding: NSASCIIStringEncoding
+			  freeWhenDone: NO];
     }
   data_bytes = [d bytes];
   if ((data_bytes != NULL) && (len >= 2))
@@ -1617,8 +1626,10 @@ GSICUCollatorOpen(NSStringCompareOptions mask, NSLocale *locale)
   if (len == 0)
     {
       RELEASE(d);
-      DESTROY(self);
-      return @"";
+      return [self initWithBytesNoCopy: (char *)""
+				length: 0
+			      encoding: NSASCIIStringEncoding
+			  freeWhenDone: NO];
     }
   data_bytes = [d bytes];
   if ((data_bytes != NULL) && (len >= 2))
@@ -1669,8 +1680,10 @@ GSICUCollatorOpen(NSStringCompareOptions mask, NSLocale *locale)
   if (len == 0)
     {
       RELEASE(d);
-      DESTROY(self);
-      return @"";
+      return [self initWithBytesNoCopy: (char *)""
+				length: 0
+			      encoding: NSASCIIStringEncoding
+			  freeWhenDone: NO];
     }
   self = [self initWithData: d encoding: enc];
   RELEASE(d);
@@ -1720,7 +1733,10 @@ GSICUCollatorOpen(NSStringCompareOptions mask, NSLocale *locale)
   if (len == 0)
     {
       DESTROY(self);
-      return @"";
+      return [self initWithBytesNoCopy: (char *)""
+				length: 0
+			      encoding: NSASCIIStringEncoding
+			  freeWhenDone: NO];
     }
   data_bytes = [d bytes];
   if ((data_bytes != NULL) && (len >= 2))
@@ -1767,7 +1783,10 @@ GSICUCollatorOpen(NSStringCompareOptions mask, NSLocale *locale)
   if (len == 0)
     {
       DESTROY(self);
-      return @"";
+      return [self initWithBytesNoCopy: (char *)""
+				length: 0
+			      encoding: NSASCIIStringEncoding
+			  freeWhenDone: NO];
     }
   data_bytes = [d bytes];
   if ((data_bytes != NULL) && (len >= 2))
@@ -1817,7 +1836,10 @@ GSICUCollatorOpen(NSStringCompareOptions mask, NSLocale *locale)
   if (len == 0)
     {
       DESTROY(self);
-      return @"";
+      return [self initWithBytesNoCopy: (char *)""
+				length: 0
+			      encoding: NSASCIIStringEncoding
+			  freeWhenDone: NO];
     }
   self = [self initWithData: d encoding: enc];
   if (self == nil)
@@ -6247,6 +6269,232 @@ static NSFileManager *fm = nil;
 - (BOOL) containsString: (NSString *)string
 {
   return [self rangeOfString: string].location != NSNotFound;
+}
+
+- (void) enumerateLinesUsingBlock: (GSNSStringLineEnumerationBlock)block
+{
+  NSUInteger	length;
+  NSUInteger 	lineStart;
+  NSUInteger	lineEnd;
+  NSUInteger	contentsEnd;
+  NSRange	currentLocationRange;
+  BOOL 		stop;
+
+  length = [self length];
+  lineStart = lineEnd = contentsEnd = 0;
+  stop = NO;
+    
+  // Enumerate through the string line by line
+  while (lineStart < length && !stop)
+    {
+      NSString	*line;
+      NSRange	lineRange;
+
+      currentLocationRange = NSMakeRange(lineStart, 0);
+      [self getLineStart: &lineStart
+		     end: &lineEnd
+	     contentsEnd: &contentsEnd
+		forRange: currentLocationRange];
+	
+      lineRange = NSMakeRange(lineStart, contentsEnd - lineStart);
+      line = [self substringWithRange: lineRange];
+      
+      // Execute the block
+      CALL_BLOCK(block, line, &stop);
+      
+      // Move to the next line
+      lineStart = lineEnd;
+    }
+}
+
+- (void) enumerateSubstringsInRange: (NSRange)range 
+                            options: (NSStringEnumerationOptions)opts 
+                         usingBlock: (GSNSStringEnumerationBlock)block
+{
+  // Get low byte.
+  uint8_t	substringType;
+  BOOL		isReverse;
+  BOOL 		substringNotRequired;
+  BOOL 		localized; 
+  NSUInteger	currentLocation;
+  BOOL 		stop = NO;
+
+  substringType = opts & 0xFF;
+  isReverse = opts & NSStringEnumerationReverse;
+  substringNotRequired = opts & NSStringEnumerationSubstringNotRequired;
+  localized = opts & NSStringEnumerationLocalized;
+
+  if (isReverse)
+    {
+      currentLocation = range.location + range.length;
+    } 
+  else 
+    {
+      currentLocation = range.location;
+    }
+
+  if (substringType == NSStringEnumerationByLines
+    || substringType == NSStringEnumerationByParagraphs)
+    {
+      BOOL isLineSep = substringType == NSStringEnumerationByLines;
+      
+      while (NO == stop)
+        {
+          /* Contains the index of the first character of the line
+	   * containing the beginning of aRange.
+	   */
+          NSUInteger	start;
+
+          /* Contains the index of the first character past the
+	   * terminator of the line containing the end of aRange.
+	   */
+          NSUInteger	end;
+
+          /* Contains the index of the first character of the terminator
+	   * of the line containing the end of aRange. 
+	   */
+          NSUInteger	contentsEnd;
+          NSRange	currentLocationRange = NSMakeRange(currentLocation, 0);
+          NSUInteger 	substringStart;
+          NSRange	substringRange;
+
+          [self _getStart: &start 
+                      end: &end 
+              contentsEnd: &contentsEnd 
+                 forRange: currentLocationRange 
+                  lineSep: isLineSep];
+
+          /* If the enumerated range starts after the line/paragraph,
+	   * we start at the beginning of the enumerated range
+	   */
+          substringStart = start > range.location ? start : range.location;
+          substringRange
+	    = NSMakeRange(substringStart, contentsEnd - substringStart);
+          CALL_BLOCK(block, 
+            substringNotRequired
+	      ? nil
+	      : [self substringWithRange: substringRange],
+            substringRange,
+            NSMakeRange(start, end - start),
+            &stop);
+          if (end == range.location + range.length) break;
+          currentLocation = end;
+        }
+    } 
+  else if (substringType == NSStringEnumerationByComposedCharacterSequences)
+    {
+      /* We could also use rangeOfComposedCharacterSequenceAtIndex:,
+       * but then we would need different logic.
+       */
+      while (NO == stop)
+        {
+          NSRange	enclosingRange;
+
+          /* Since all characters are in a composed character sequence,
+	   * enclosingRange == substringRange
+	   */
+          enclosingRange
+	    = [self rangeOfComposedCharacterSequenceAtIndex: currentLocation];
+          CALL_BLOCK(block, 
+            substringNotRequired
+	      ? nil
+	      : [self substringWithRange: enclosingRange],
+            enclosingRange,
+            enclosingRange,
+            &stop);
+          currentLocation = enclosingRange.location + enclosingRange.length;
+        }
+    } 
+  else if (substringType == NSStringEnumerationByWords
+    || substringType == NSStringEnumerationBySentences)
+    {
+#if GS_USE_ICU
+      // These macros may be useful elsewhere.
+      #define GS_U_HANDLE_ERROR(errorCode, description) do { \
+        if (U_FAILURE(errorCode)) { \
+          NSWarnMLog(@"Error " description ": %s", u_errorName(errorCode)); \
+          return; \
+        } else if (errorCode < U_ZERO_ERROR) { \
+          NSWarnMLog(@"Warning " description ": %s", u_errorName(errorCode)); \
+        } \
+        errorCode = U_ZERO_ERROR; \
+      } while (NO)
+
+      BOOL		byWords = substringType == NSStringEnumerationByWords;
+      NSUInteger	length = range.length;
+      UChar 		characters[length];
+      UErrorCode 	errorCode = U_ZERO_ERROR;
+      const char	*locale;
+      UBreakIterator	*breakIterator;
+      int32_t		start;
+      int32_t		end;
+
+      [self getCharacters: characters range: range];
+      /* @ss=standard will use lists of common abbreviations,
+       * such as Mr., Mrs., etc.
+       */
+      locale = localized
+        ? [[[[NSLocale currentLocale] localeIdentifier] 
+	  stringByAppendingString: @"@ss=standard"] UTF8String]
+        : "en_US_POSIX";
+      breakIterator = ubrk_open(
+	byWords ? UBRK_WORD : UBRK_SENTENCE,	// type
+	locale, 				// locale
+	characters, 				// text
+	length, 				// textLength
+	&errorCode);
+      GS_U_HANDLE_ERROR(errorCode, @"opening ICU break iterator");
+
+// FIXME: Implement reverse enumeration by using ubrk_last and ubrk_previous
+      start = ubrk_first(breakIterator);
+      for (end = ubrk_next(breakIterator);
+	NO == stop && end != UBRK_DONE;
+	start = end, end = ubrk_next(breakIterator))
+	{
+	  BOOL 		isValidSubstring = YES;
+	  NSUInteger 	nextLocation;
+	  NSRange 	enclosingRange;
+	    
+	  if (byWords) 
+	    {
+	      int32_t	ruleStatus;
+	      
+	      ruleStatus = ubrk_getRuleStatus(breakIterator);
+	      isValidSubstring = ruleStatus != UBRK_WORD_NONE;
+	    }
+
+	  nextLocation = range.location + end;
+	  enclosingRange = NSMakeRange(currentLocation, end - start);
+	  currentLocation = nextLocation;
+
+	  if (isValidSubstring)
+	    {
+	      CALL_BLOCK(block, 
+		substringNotRequired ? nil
+		  : [self substringWithRange: enclosingRange],
+		enclosingRange,
+		enclosingRange,
+		&stop);
+	    }
+	}
+#else
+      NSWarnLog(@"NSStringEnumerationByWords and NSStringEnumerationBySentences"
+	@" are not supported when GNUstep-base is compiled without ICU.");
+      return;
+#endif
+    }
+  else if (substringType == NSStringEnumerationByCaretPositions)
+    {
+      // FIXME - Not documented by Apple.
+      NSWarnLog(@"NSStringEnumerationByCaretPositions is not supported");
+      return;
+    }
+  else if (substringType == NSStringEnumerationByDeletionClusters)
+    {
+      // FIXME - Not documented by Apple.
+      NSWarnLog(@"NSStringEnumerationByDeletionClusters is not supported");
+      return;
+    }
 }
 
 @end

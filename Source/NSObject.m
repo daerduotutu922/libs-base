@@ -35,6 +35,7 @@
 
 #import "common.h"
 #include <objc/Protocol.h>
+#include <objc/message.h>
 #import "Foundation/NSMethodSignature.h"
 #import "Foundation/NSInvocation.h"
 #import "Foundation/NSLock.h"
@@ -208,20 +209,6 @@ static void GSLogZombie(id o, SEL sel)
 #undef	GSATOMICREAD
 #endif
 
-
-/* Traditionally, GNUstep has been using a 32bit reference count in front
- * of the object. The automatic reference counting implementation in
- * libobjc2 uses an intptr_t instead, so NSObject will only be compatible
- * with ARC if either of the following apply:
- *
- * a) sizeof(intptr_t) == sizeof(int32_t)
- * b) we can provide atomic operations on pointer sized values, allowing
- *    us to extend the refcount to intptr_t.
- */
-#ifdef GS_ARC_COMPATIBLE
-#undef GS_ARC_COMPATIBLE
-#endif
-
 #if defined(__llvm__) || (defined(USE_ATOMIC_BUILTINS) && (__GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 1)))
 /* Use the GCC atomic operations with recent GCC versions */
 
@@ -230,7 +217,6 @@ typedef intptr_t gsrefcount_t;
 #define GSATOMICREAD(X) (*(X))
 #define GSAtomicIncrement(X)    __sync_add_and_fetch(X, 1)
 #define GSAtomicDecrement(X)    __sync_sub_and_fetch(X, 1)
-#define GS_ARC_COMPATIBLE 1
 
 #elif	defined(_WIN32)
 
@@ -424,16 +410,6 @@ static inline pthread_mutex_t   *GSAllocationLockForObject(id p)
 
 #endif
 
-#ifndef GS_ARC_COMPATIBLE
-/*
- * If we haven't previously declared that we can work in fast-ARC mode,
- * check whether a point is 32bit (4 bytes) wide, which also enables ARC
- * integration.
- */
-#  if __SIZEOF_POINTER__ == 4
-#    define GS_ARC_COMPATIBLE 1
-#  endif
-#endif
 
 #if defined(__GNUC__) && __GNUC__ < 4
 #define __builtin_offsetof(s, f) (uintptr_t)(&(((s*)0)->f))
@@ -660,7 +636,8 @@ static id objc_retain_fast_np_internal(id anObject)
 #endif	/* GSATOMICREAD */
   if (YES == tooFar)
     {
-      static NSHashTable        *overrun = nil;
+      static NSHashTable	*overrun = nil;
+      static gs_mutex_t       	countLock = GS_MUTEX_INIT_STATIC;
 
       /* We store this instance in a hash table so that we will only raise
        * an exception for it once (and can therefore expect to log the instance
@@ -668,7 +645,7 @@ static id objc_retain_fast_np_internal(id anObject)
        * NB. The hash table does not retain the object, so the code in the
        * lock protected region below should be safe anyway.
        */
-      [gnustep_global_lock lock];
+      GS_MUTEX_LOCK(countLock);
       if (nil == overrun)
         {
           overrun = NSCreateHashTable(NSNonRetainedObjectHashCallBacks, 0);
@@ -681,7 +658,7 @@ static id objc_retain_fast_np_internal(id anObject)
         {
           tooFar = NO;
         }
-      [gnustep_global_lock lock];
+      GS_MUTEX_UNLOCK(countLock);
       if (YES == tooFar)
         {
           NSString      *base;
@@ -948,8 +925,9 @@ NSShouldRetainWithZone (NSObject *anObject, NSZone *requestedZone)
  * </p>
  */
 @implementation NSObject
-#if  defined(GS_ARC_COMPATIBLE)
-- (void)_ARCCompliantRetainRelease {}
+#ifdef OBJC_CAP_ARC
++ (void) _TrivialAllocInit {}
+- (void) _ARCCompliantRetainRelease {}
 #endif
 
 /**
@@ -1065,13 +1043,6 @@ static id gs_weak_load(id obj)
       }
 #endif
 
-      /* Create the global lock.
-       * NB. Ths is one of the first things we do ... setting up a new lock
-       * must not call any other Objective-C classes and must not involve
-       * any use of the autorelease system.
-       */
-      gnustep_global_lock = [GSUntracedRecursiveLock new];
-
       /* Behavior debugging ... enable with environment variable if needed.
        */
       GSObjCBehaviorDebug(GSPrivateEnvironmentFlag("GNUSTEP_BEHAVIOR_DEBUG",
@@ -1095,11 +1066,6 @@ static id gs_weak_load(id obj)
       /* Make sure the constant string class works.
        */
       NSConstantStringClass = [NSString constantStringClass];
-
-      /* Now that the string class (and autorelease) is set up, we can set
-       * the name of the lock to a string value safely.
-       */
-      [gnustep_global_lock setName: @"gnustep_global_lock"];
 
       /* Determine zombie management flags and set up a map to store
        * information about zombie objects.
@@ -2104,12 +2070,6 @@ static id gs_weak_load(id obj)
 
   if (aSelector == 0)
     {
-      if (GSPrivateDefaultsFlag(GSMacOSXCompatible))
-	{
-	  [NSException raise: NSInvalidArgumentException
-		    format: @"%@ null selector given",
-	    NSStringFromSelector(_cmd)];
-	}
       return NO;
     }
 
@@ -2225,14 +2185,13 @@ static id gs_weak_load(id obj)
 /**
  * Sets the version number of the receiving class.  Should be nonnegative.
  */
-+ (id) setVersion: (NSInteger)aVersion
++ (void) setVersion: (NSInteger)aVersion
 {
   if (aVersion < 0)
     [NSException raise: NSInvalidArgumentException
 	        format: @"%s +setVersion: may not set a negative version",
 			GSClassNameFromObject(self)];
   class_setVersion(self, aVersion);
-  return self;
 }
 
 /**

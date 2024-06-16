@@ -25,7 +25,6 @@
 #import "common.h"
 #define	EXPOSE_NSPort_IVARS	1
 #define	EXPOSE_NSSocketPort_IVARS	1
-#import "GNUstepBase/GSLock.h"
 #import "GNUstepBase/GSTLS.h"
 #import "Foundation/NSArray.h"
 #import "Foundation/NSNotification.h"
@@ -138,11 +137,6 @@ static int socketError()
   return errno;
 }
 #endif /* !_WIN32 */
-
-/*
- * Largest chunk of data possible in DO
- */
-static uint32_t	maxDataLength = 32 * 1024 * 1024;
 
 /* Options for TLS encryption of connections
  */
@@ -692,7 +686,9 @@ static Class	runLoopClass;
   if (connect(desc, (struct sockaddr*)&sockAddr,
     GSPrivateSockaddrLength(&sockAddr)) == SOCKET_ERROR)
     {
-      if (!GSWOULDBLOCK)
+      long	eno = GSNETERROR;
+
+      if (!GSWOULDBLOCK(eno))
 	{
 	  NSLog(@"unable to make connection to %@ - %@",
 	    GSPrivateSockaddrName(&sockAddr), [NSError _last]);
@@ -883,15 +879,19 @@ static Class	runLoopClass;
   else
     {
       want = [rData length];
-      if (want < rWant)
+      if (want < MAX(rWant, NETBLOCK))
         {
-          want = rWant;
-          [rData setLength: want];
-        }
-      if (want < NETBLOCK)
-        {
-          want = NETBLOCK;
-          [rData setLength: want];
+          want = MAX(rWant, NETBLOCK);
+	  NS_DURING
+	    {
+	      [rData setLength: want];
+	    }
+	  NS_HANDLER
+	    {
+	      [self invalidate];
+	      [localException raise];
+	    }
+	  NS_ENDHANDLER
         }
     }
 
@@ -1013,13 +1013,6 @@ static Class	runLoopClass;
 		    }
 		  else
 		    {
-		      if (l > maxDataLength)
-		        {
-		          NSLog(@"%@ - unreasonable length (%u) for data",
-		        	self, l);
-		          [self invalidate];
-		          return;
-		        }
 		      /*
 		       * If not a port or zero length data,
 		       * we discard the data read so far and fill the
@@ -1035,13 +1028,6 @@ static Class	runLoopClass;
 		}
 	      else if (rType == GSP_HEAD)
 		{
-		  if (l > maxDataLength)
-		    {
-		      NSLog(@"%@ - unreasonable length (%u) for data",
-		        self, l);
-		      [self invalidate];
-		      return;
-		    }
 		  /*
 		   * If not a port or zero length data,
 		   * we discard the data read so far and fill the
@@ -1266,18 +1252,20 @@ static Class	runLoopClass;
 	      cLength = 0;
 
 #if	defined(HAVE_GNUTLS)
-	      NSDictionary	*opts = [p clientOptionsForTLS];
-	      DESTROY(session);
-	      if (opts)
-		{
-		  session = [[GSTLSSession alloc] initWithOptions: opts
-			  direction: YES	// as client
-			  transport: self
-			       push: GSTLSHandlePush
-			       pull: GSTLSHandlePull];
-		  NSDebugMLLog(@"GSTcpHandle",
-		    @"%@ is connecting using %@", self, session);
-		}
+              {
+                NSDictionary	*opts = [p clientOptionsForTLS];
+                DESTROY(session);
+                if (opts)
+                  {
+                    session = [[GSTLSSession alloc] initWithOptions: opts
+                                                          direction: YES	// as client
+                                                          transport: self
+                                                               push: GSTLSHandlePush
+                                                               pull: GSTLSHandlePull];
+                    NSDebugMLLog(@"GSTcpHandle",
+                                 @"%@ is connecting using %@", self, session);
+                  }
+              }
 #endif
             }
         }
@@ -2425,18 +2413,20 @@ static Class		tcpPortClass;
 	  ASSIGN(handle->defaultAddress, GSPrivateSockaddrHost(&sockAddr));
 	  [handle setState: GS_H_ACCEPT];
 #if	defined(HAVE_GNUTLS)
-	  NSDictionary	*o;
-	  if ((o = [self serverOptionsForTLS]) != nil)
-	    {
-	      handle->session = [[GSTLSSession alloc]
-		initWithOptions: o
-		      direction: NO	// as server
-		      transport: handle
-			   push: GSTLSHandlePush
-			   pull: GSTLSHandlePull];
-              NSDebugMLLog(@"GSTcpHandle",
-                @"%@ is accepting using %@", handle, handle->session);
-	    }
+	  {
+	    NSDictionary	*o;
+	    if ((o = [self serverOptionsForTLS]) != nil)
+	      {
+	        handle->session = [[GSTLSSession alloc]
+		  initWithOptions: o
+		        direction: NO	// as server
+		        transport: handle
+			     push: GSTLSHandlePush
+			     pull: GSTLSHandlePull];
+                NSDebugMLLog(@"GSTcpHandle",
+                  @"%@ is accepting using %@", handle, handle->session);
+	      }
+	  }
 #endif
 	  [self addHandle: handle forSend: NO];
 	}

@@ -26,7 +26,6 @@
    */
 
 #import "common.h"
-#import "GNUstepBase/GSLock.h"
 #import "Foundation/NSEnumerator.h"
 #import "Foundation/NSSet.h"
 #import "Foundation/NSCoder.h"
@@ -98,7 +97,7 @@ static Class NSCountedSet_concrete_class;
 
 /**
  * Returns the number of times that an object that is equal to the
- * specified object (as determined by the [-isEqual:] method) has
+ * specified object (as determined by the [NSObject-isEqual:] method) has
  * been added to the set and not removed from it.
  */
 - (NSUInteger) countForObject: (id)anObject

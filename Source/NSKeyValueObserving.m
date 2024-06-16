@@ -41,8 +41,8 @@
 #import "Foundation/NSValue.h"
 #import "GNUstepBase/GSObjCRuntime.h"
 #import "GNUstepBase/Unicode.h"
-#import "GNUstepBase/GSLock.h"
 #import "GSInvocation.h"
+#import "GSPThread.h"
 
 #if defined(USE_LIBFFI)
 #import "cifframe.h"
@@ -78,9 +78,11 @@ static id               null;
 static inline void
 setup()
 {
+  static gs_mutex_t     setupLock = GS_MUTEX_INIT_STATIC;
+
   if (nil == kvoLock)
     {
-      [gnustep_global_lock lock];
+      GS_MUTEX_LOCK(setupLock);
       if (nil == kvoLock)
 	{
 	  kvoLock = [NSRecursiveLock new];
@@ -93,7 +95,7 @@ setup()
 	      NSOwnedPointerMapValueCallBacks, 128);
 	  baseClass = NSClassFromString(@"GSKVOBase");
 	}
-      [gnustep_global_lock unlock];
+      GS_MUTEX_UNLOCK(setupLock);
     }
 }
 /*
@@ -1288,6 +1290,43 @@ cifframe_callback(ffi_cif *cif, void *retp, void **args, void *user)
   [iLock unlock];
   return context;
 }
+
+- (void) removeObserver: (NSObject*)anObserver
+	     forKeyPath: (NSString*)aPath
+		context: (void*)context
+{
+  GSKVOPathInfo	*pathInfo;
+  
+  [iLock lock];
+  pathInfo = (GSKVOPathInfo*)NSMapGet(paths, (void*)aPath);
+  if (pathInfo != nil)
+    {
+      unsigned  count = [pathInfo->observations count];
+      
+      pathInfo->allOptions = 0;
+      while (count-- > 0)
+        {
+          GSKVOObservation      *o;
+          
+          o = [pathInfo->observations objectAtIndex: count];
+          if ((o->observer == anObserver || o->observer == nil) &&
+              (o->context == context))
+            {
+              [pathInfo->observations removeObjectAtIndex: count];
+              if ([pathInfo->observations count] == 0)
+                {
+                  NSMapRemove(paths, (void*)aPath);
+                }
+            }
+          else
+            {
+              pathInfo->allOptions |= o->options;
+            }
+        }
+    }
+  [iLock unlock];  
+}
+
 @end
 
 @implementation NSKeyValueObservationForwarder
@@ -1561,6 +1600,32 @@ cifframe_callback(ffi_cif *cif, void *retp, void **args, void *user)
     [forwarder finalize];
 }
 
+- (void) removeObserver: (NSObject*)anObserver
+             forKeyPath: (NSString*)aPath
+                context: (void *)context
+{
+  GSKVOInfo	*info;
+  
+  setup();
+  [kvoLock lock];
+  /*
+   * Get the observation information and remove this observation.
+   */
+  info = (GSKVOInfo*)[self observationInfo];
+  [info removeObserver: anObserver forKeyPath: aPath context: context];
+  if ([info isUnobserved] == YES)
+    {
+      /*
+       * The instance is no longer being observed ... so we can
+       * turn off key-value-observing for it.
+       */
+      object_setClass(self, [self class]);
+      IF_NO_GC(AUTORELEASE(info);)
+      [self setObservationInfo: nil];
+    }
+  [kvoLock unlock];
+}
+
 @end
 
 /**
@@ -1619,6 +1684,25 @@ cifframe_callback(ffi_cif *cif, void *retp, void **args, void *user)
 
       [elem removeObserver: anObserver
                 forKeyPath: aPath];
+
+      i = [indexes indexGreaterThanIndex: i];
+    }
+}
+
+- (void) removeObserver: (NSObject*)anObserver
+   fromObjectsAtIndexes: (NSIndexSet *)indexes
+             forKeyPath: (NSString*)aPath
+                context: (void *)context
+{
+  NSUInteger i = [indexes firstIndex];
+
+  while (i != NSNotFound)
+    {
+      NSObject *elem = [self objectAtIndex: i];
+
+      [elem removeObserver: anObserver
+                forKeyPath: aPath
+		   context: context];
 
       i = [indexes indexGreaterThanIndex: i];
     }
